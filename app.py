@@ -1,8 +1,9 @@
-import streamlit as st
+import os
+import time
 import numpy as np
 import pandas as pd
-import time
-from PIL import Image
+import streamlit as st
+from PIL import Image, ImageOps
 from ultralytics import YOLO
 from skimage.morphology import skeletonize
 
@@ -36,7 +37,7 @@ st.markdown(
         font-size: 2.5rem;
         font-weight: 800;
         color: #0b2e59;
-        margin-bottom: 0.4rem;
+        margin-bottom: 0.35rem;
     }
 
     .sub-text {
@@ -111,7 +112,7 @@ st.markdown(
 )
 
 # =========================================================
-# MP 损伤评估算法
+# 损伤评估算法
 # =========================================================
 class MPAlgorithm:
     def __init__(self):
@@ -142,48 +143,59 @@ class MPAlgorithm:
         l1 = get_level(area_rate, 'area_rate')
         l2 = get_level(total_length, 'total_length')
         l3 = get_level(num_cracks, 'num_cracks')
+
         priority = {'I': 1, 'II': 2, 'III': 3, 'IV': 4, 'V': 5}
         final_lvl = max([l1, l2, l3], key=lambda x: priority[x])
+
         return final_lvl, self.descriptions[final_lvl]
 
 
 # =========================================================
 # 模型加载
 # =========================================================
+MODEL_PATH = "best.pt"
+
 @st.cache_resource
-def load_model(model_path="best.pt"):
+def load_model(model_path: str = MODEL_PATH):
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"未找到模型文件：{model_path}")
+    return YOLO(model_path)
+
+
+def get_model():
     try:
-        return YOLO(model_path)
+        return load_model(MODEL_PATH)
     except Exception as e:
         st.error(f"模型加载失败：{e}")
+        st.info("请检查 best.pt 是否已上传到仓库根目录，以及 requirements.txt 中依赖版本是否正确。")
         st.stop()
 
-model = load_model()
-
-model = load_model()
-mp_algo = MPAlgorithm()
 
 # =========================================================
 # 工具函数
 # =========================================================
 def resize_mask(mask_2d: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
-    """将模型输出mask缩放到原图尺寸"""
     mask_img = Image.fromarray((mask_2d * 255).astype(np.uint8))
     mask_img = mask_img.resize((target_w, target_h), Image.Resampling.NEAREST)
     return (np.array(mask_img) > 127).astype(np.uint8)
 
 
 def create_overlay(image_rgb: np.ndarray, binary_mask: np.ndarray) -> np.ndarray:
-    """生成裂缝叠加图"""
     overlay = image_rgb.copy()
     overlay[binary_mask > 0] = [0, 255, 0]
     return overlay
 
 
-def process_image(image_pil: Image.Image):
+def normalize_uploaded_image(uploaded_file) -> Image.Image:
+    image = Image.open(uploaded_file)
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    return image
+
+
+def process_image(image_pil: Image.Image, model, mp_algo: MPAlgorithm):
     start_time = time.time()
 
-    image_rgb = np.array(image_pil.convert("RGB"))
+    image_rgb = np.array(image_pil)
     h, w = image_rgb.shape[:2]
 
     results = model(image_rgb, verbose=False)
@@ -248,6 +260,12 @@ with st.sidebar:
     st.write("**推理耗时**")
 
 # =========================================================
+# 加载模型
+# =========================================================
+model = get_model()
+mp_algo = MPAlgorithm()
+
+# =========================================================
 # 上传区域
 # =========================================================
 st.markdown('<div class="white-card">', unsafe_allow_html=True)
@@ -267,77 +285,86 @@ if run_button:
         st.warning("请先上传至少一张图像。")
     else:
         results_list = []
+        failed_files = []
+
         progress_bar = st.progress(0)
 
         for idx, file in enumerate(uploaded_files):
             try:
-                image_pil = Image.open(file).convert("RGB")
-                result = process_image(image_pil)
+                image_pil = normalize_uploaded_image(file)
+                result = process_image(image_pil, model, mp_algo)
                 result["name"] = file.name
                 results_list.append(result)
             except Exception as e:
-                st.error(f"{file.name} 处理失败：{e}")
+                failed_files.append((file.name, str(e)))
 
             progress_bar.progress((idx + 1) / len(uploaded_files))
 
-        if results_list:
-            st.success(f"检测完成，共处理 {len(results_list)} 张图像。")
+        if failed_files:
+            for file_name, err in failed_files:
+                st.warning(f"{file_name} 处理失败：{err}")
 
-            # 汇总表
-            summary_rows = []
-            for res in results_list:
-                m = res["metrics"]
-                summary_rows.append({
-                    "图像名称": res["name"],
-                    "裂缝总长度（像素）": m["total_length"],
-                    "裂缝数量": m["num_cracks"],
-                    "面积率（%）": round(m["area_ratio"], 3),
-                    "损伤等级": m["level"],
-                    "推理耗时（ms）": round(m["time_ms"], 2)
-                })
+        if not results_list:
+            st.error("所有图像均处理失败，请检查模型文件或输入图像格式。")
+            st.stop()
 
-            st.subheader("批量检测结果汇总")
-            summary_df = pd.DataFrame(summary_rows)
-            st.dataframe(summary_df, use_container_width=True)
+        st.success(f"检测完成，共成功处理 {len(results_list)} 张图像。")
 
-            # 单图详情
-            st.subheader("单张图像检测详情")
-            selected_name = st.selectbox(
-                "选择图像查看详细结果",
-                [res["name"] for res in results_list]
+        # 汇总表
+        summary_rows = []
+        for res in results_list:
+            m = res["metrics"]
+            summary_rows.append({
+                "图像名称": res["name"],
+                "裂缝总长度（像素）": m["total_length"],
+                "裂缝数量": m["num_cracks"],
+                "面积率（%）": round(m["area_ratio"], 3),
+                "损伤等级": m["level"],
+                "推理耗时（ms）": round(m["time_ms"], 2)
+            })
+
+        st.subheader("批量检测结果汇总")
+        summary_df = pd.DataFrame(summary_rows)
+        st.dataframe(summary_df, use_container_width=True)
+
+        # 单图详情
+        st.subheader("单张图像检测详情")
+        selected_name = st.selectbox(
+            "选择图像查看详细结果",
+            [res["name"] for res in results_list]
+        )
+
+        selected_result = next(res for res in results_list if res["name"] == selected_name)
+        m = selected_result["metrics"]
+
+        st.markdown(
+            f"""
+            <div class="result-card">
+                <div class="metric-title">损伤等级</div>
+                <div class="metric-value">{m["level"]}级</div>
+                <div style="margin-top:8px;color:#166534;font-weight:600;">{m["description"]}</div>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("裂缝总长度", f'{m["total_length"]} 像素')
+        c2.metric("裂缝数量", f'{m["num_cracks"]}')
+        c3.metric("面积率", f'{m["area_ratio"]:.3f} %')
+        c4.metric("推理耗时", f'{m["time_ms"]:.1f} ms')
+
+        img_col1, img_col2 = st.columns(2)
+        with img_col1:
+            st.image(
+                selected_result["image_rgb"],
+                caption=f"原始图像：{selected_result['name']}",
+                use_container_width=True
             )
 
-            selected_result = next(res for res in results_list if res["name"] == selected_name)
-            m = selected_result["metrics"]
-
-            st.markdown(
-                f"""
-                <div class="result-card">
-                    <div class="metric-title">损伤等级</div>
-                    <div class="metric-value">{m["level"]}级</div>
-                    <div style="margin-top:8px;color:#166534;font-weight:600;">{m["description"]}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
+        with img_col2:
+            st.image(
+                selected_result["overlay_rgb"],
+                caption="检测结果（裂缝叠加图）",
+                use_container_width=True
             )
-
-            c1, c2, c3, c4 = st.columns(4)
-            c1.metric("裂缝总长度", f'{m["total_length"]} 像素')
-            c2.metric("裂缝数量", f'{m["num_cracks"]}')
-            c3.metric("面积率", f'{m["area_ratio"]:.3f} %')
-            c4.metric("推理耗时", f'{m["time_ms"]:.1f} ms')
-
-            img_col1, img_col2 = st.columns(2)
-            with img_col1:
-                st.image(
-                    selected_result["image_rgb"],
-                    caption=f"原始图像：{selected_result['name']}",
-                    use_container_width=True
-                )
-
-            with img_col2:
-                st.image(
-                    selected_result["overlay_rgb"],
-                    caption="检测结果（裂缝叠加图）",
-                    use_container_width=True
-                )
