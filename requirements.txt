@@ -1,10 +1,10 @@
-streamlit==1.55.0
+streamlit
 numpy
 pandas
 pillow
-ultralytics
-scikit-image
 opencv-python-headless
+ultralytics
 torch
 torchvision
+scikit-image
 matplotlib
