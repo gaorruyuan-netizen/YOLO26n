@@ -1,8 +1,8 @@
-import os
-import tempfile
 import streamlit as st
-from PIL import Image, ImageOps
 from ultralytics import YOLO
+from PIL import Image
+import numpy as np
+import tempfile
 
 st.set_page_config(page_title="裂缝检测系统", layout="wide")
 
