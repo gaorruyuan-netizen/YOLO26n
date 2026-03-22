@@ -1,45 +1,19 @@
 import streamlit as st
 import numpy as np
-import pandas as pd
-import time
 from PIL import Image, ImageOps
 from ultralytics import YOLO
 from skimage.morphology import skeletonize
 
-# =====================================================
-# 页面设置
-# =====================================================
-st.set_page_config(
-    page_title="裂缝检测与损伤评估系统",
-    page_icon="🧱",
-    layout="wide"
-)
+st.set_page_config(page_title="裂缝检测与损伤评估系统", page_icon="🧱", layout="wide")
 
-# =====================================================
-# 样式
-# =====================================================
 st.markdown("""
 <style>
-.stApp {
-    background-color: #f5f7fb;
-}
-.main-title {
-    font-size: 40px;
-    font-weight: 800;
-    color: #0b2e59;
-}
-.result-box {
-    background: #eef9f0;
-    padding: 20px;
-    border-radius: 12px;
-    border: 1px solid #b7dfc0;
-}
+.stApp {background-color:#f5f7fb;}
+.main-title {font-size:40px;font-weight:800;color:#0b2e59;}
+.result-box {background:#eef9f0;padding:20px;border-radius:12px;border:1px solid #b7dfc0;}
 </style>
 """, unsafe_allow_html=True)
 
-# =====================================================
-# 损伤评估算法
-# =====================================================
 class MPAlgorithm:
     def __init__(self):
         self.thresholds = {
@@ -57,29 +31,27 @@ class MPAlgorithm:
                 if low <= val < high:
                     return lvl
             return 'V'
-
-        l1 = get_level(area_rate, 'area_rate')
-        l2 = get_level(total_length, 'total_length')
-        l3 = get_level(num_cracks, 'num_cracks')
-
-        priority = {'I':1,'II':2,'III':3,'IV':4,'V':5}
-        return max([l1,l2,l3], key=lambda x:priority[x])
+        levels = [
+            get_level(area_rate, 'area_rate'),
+            get_level(total_length, 'total_length'),
+            get_level(num_cracks, 'num_cracks')
+        ]
+        priority = {'I':1, 'II':2, 'III':3, 'IV':4, 'V':5}
+        return max(levels, key=lambda x: priority[x])
 
 mp_algo = MPAlgorithm()
 
-# =====================================================
-# 加载模型
-# =====================================================
 @st.cache_resource
 def load_model():
-    model = YOLO("best.pt")
-    return model
+    return YOLO("best.pt")
 
 model = load_model()
 
-# =====================================================
-# 图像处理
-# =====================================================
+def resize_mask(mask_2d, target_w, target_h):
+    mask_img = Image.fromarray((mask_2d * 255).astype(np.uint8))
+    mask_img = mask_img.resize((target_w, target_h), Image.Resampling.NEAREST)
+    return (np.array(mask_img) > 127).astype(np.uint8)
+
 def process_image(image_pil):
     image_rgb = np.array(image_pil)
     h, w = image_rgb.shape[:2]
@@ -89,14 +61,11 @@ def process_image(image_pil):
     union_mask = np.zeros((h, w), dtype=np.uint8)
     num_cracks = 0
 
-    if results[0].masks is not None:
+    if results and results[0].masks is not None:
         masks_data = results[0].masks.data.cpu().numpy()
         num_cracks = len(masks_data)
-
         for m in masks_data:
-            m_img = Image.fromarray((m * 255).astype(np.uint8))
-            m_img = m_img.resize((w, h), Image.NEAREST)
-            m_arr = (np.array(m_img) > 127).astype(np.uint8)
+            m_arr = resize_mask(m, w, h)
             union_mask = np.maximum(union_mask, m_arr)
 
     skeleton = skeletonize(union_mask > 0).astype(np.uint8)
@@ -106,28 +75,24 @@ def process_image(image_pil):
     level = mp_algo.evaluate(area_ratio, total_length, num_cracks)
 
     overlay = image_rgb.copy()
-    overlay[union_mask > 0] = [0,255,0]
+    overlay[union_mask > 0] = [0, 255, 0]
 
     return overlay, total_length, num_cracks, area_ratio, level
 
-# =====================================================
-# 页面
-# =====================================================
 st.markdown('<div class="main-title">裂缝检测与损伤评估系统</div>', unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader("上传图像", type=["jpg","png","jpeg"])
+uploaded_file = st.file_uploader("上传图像", type=["jpg", "jpeg", "png", "bmp", "tif", "tiff"])
 
 if uploaded_file:
     image = Image.open(uploaded_file)
     image = ImageOps.exif_transpose(image).convert("RGB")
 
     if st.button("开始检测"):
-        with st.spinner("检测中..."):
-            overlay, length, num, area, level = process_image(image)
+        overlay, length, num, area, level = process_image(image)
 
         col1, col2 = st.columns(2)
-        col1.image(image, caption="原始图像")
-        col2.image(overlay, caption="检测结果")
+        col1.image(image, caption="原始图像", use_container_width=True)
+        col2.image(overlay, caption="检测结果", use_container_width=True)
 
         st.markdown('<div class="result-box">', unsafe_allow_html=True)
         st.write(f"**裂缝总长度：** {length}")
