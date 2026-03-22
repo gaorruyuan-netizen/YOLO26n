@@ -1,42 +1,43 @@
 import os
 import tempfile
 import streamlit as st
-import numpy as np
 from PIL import Image, ImageOps
 from ultralytics import YOLO
 
-st.set_page_config(page_title="裂缝检测系统", page_icon="🧱", layout="wide")
+st.set_page_config(page_title="裂缝检测系统", layout="wide")
 
-st.title("裂缝识别与损伤评估系统")
-st.write("上传图像后，系统将自动进行裂缝识别并给出损伤等级。")
+st.title("混凝土裂缝识别与损伤评估系统")
+st.write("上传结构表面图像，系统将自动识别裂缝并评估损伤等级。")
 
 @st.cache_resource
 def load_model():
-    if not os.path.exists("best.pt"):
-        st.error("未找到模型文件 best.pt，请确认它已上传到仓库根目录。")
+    model_path = "best.pt"
+    if not os.path.exists(model_path):
+        st.error("未找到 best.pt 模型文件，请确认已上传到仓库。")
         st.stop()
-    return YOLO("best.pt")
+    model = YOLO(model_path)
+    return model
 
 model = load_model()
 
-uploaded_file = st.file_uploader("上传图片", type=["jpg", "jpeg", "png", "bmp"])
+uploaded_file = st.file_uploader("上传图像", type=["jpg", "jpeg", "png"])
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
     image = ImageOps.exif_transpose(image).convert("RGB")
     st.image(image, caption="原始图像", use_container_width=True)
 
-    if st.button("开始识别"):
+    if st.button("开始检测"):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
             image.save(tmp.name)
             temp_path = tmp.name
 
         try:
-            results = model(temp_path, verbose=False)
+            results = model(temp_path)
             plotted = results[0].plot()
-            result_img = Image.fromarray(plotted[..., ::-1] if plotted.shape[-1] == 3 else plotted)
+            result_img = Image.fromarray(plotted[:, :, ::-1])
 
-            st.image(result_img, caption="识别结果", use_container_width=True)
+            st.image(result_img, caption="检测结果", use_container_width=True)
 
             crack_num = 0 if results[0].boxes is None else len(results[0].boxes)
 
@@ -49,11 +50,12 @@ if uploaded_file is not None:
             else:
                 level = "严重损伤"
 
-            st.success(f"检测到裂缝数量：{crack_num}")
-            st.info(f"结构损伤等级：{level}")
+            st.success(f"裂缝数量：{crack_num}")
+            st.warning(f"损伤等级：{level}")
 
         except Exception as e:
-            st.error(f"识别失败：{e}")
+            st.error(f"检测失败：{e}")
+
         finally:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
