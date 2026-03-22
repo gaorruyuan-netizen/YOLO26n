@@ -1,102 +1,54 @@
 import streamlit as st
 import numpy as np
-from PIL import Image, ImageOps
+from PIL import Image
 from ultralytics import YOLO
-from skimage.morphology import skeletonize
+import tempfile
+import os
 
-st.set_page_config(page_title="裂缝检测与损伤评估系统", page_icon="🧱", layout="wide")
+st.set_page_config(page_title="PABC裂缝检测系统", layout="wide")
 
-st.markdown("""
-<style>
-.stApp {background-color:#f5f7fb;}
-.main-title {font-size:40px;font-weight:800;color:#0b2e59;}
-.result-box {background:#eef9f0;padding:20px;border-radius:12px;border:1px solid #b7dfc0;}
-</style>
-""", unsafe_allow_html=True)
-
-class MPAlgorithm:
-    def __init__(self):
-        self.thresholds = {
-            'I': {'area_rate': (0, 0.5), 'total_length': (0, 500), 'num_cracks': (0, 10)},
-            'II': {'area_rate': (0.5, 1.5), 'total_length': (500, 2000), 'num_cracks': (10, 30)},
-            'III': {'area_rate': (1.5, 2.5), 'total_length': (2000, 7000), 'num_cracks': (30, 70)},
-            'IV': {'area_rate': (2.5, 5.0), 'total_length': (7000, 10000), 'num_cracks': (70, 110)},
-            'V': {'area_rate': (5.0, float('inf')), 'total_length': (10000, float('inf')), 'num_cracks': (110, float('inf'))}
-        }
-
-    def evaluate(self, area_rate, total_length, num_cracks):
-        def get_level(val, key):
-            for lvl in ['I', 'II', 'III', 'IV', 'V']:
-                low, high = self.thresholds[lvl][key]
-                if low <= val < high:
-                    return lvl
-            return 'V'
-        levels = [
-            get_level(area_rate, 'area_rate'),
-            get_level(total_length, 'total_length'),
-            get_level(num_cracks, 'num_cracks')
-        ]
-        priority = {'I':1, 'II':2, 'III':3, 'IV':4, 'V':5}
-        return max(levels, key=lambda x: priority[x])
-
-mp_algo = MPAlgorithm()
+st.title("PABC裂缝识别与损伤评估系统")
+st.write("上传混凝土图像，系统将自动识别裂缝并评估损伤程度")
 
 @st.cache_resource
 def load_model():
-    return YOLO("best.pt")
+    model = YOLO("best.pt")
+    return model
 
 model = load_model()
 
-def resize_mask(mask_2d, target_w, target_h):
-    mask_img = Image.fromarray((mask_2d * 255).astype(np.uint8))
-    mask_img = mask_img.resize((target_w, target_h), Image.Resampling.NEAREST)
-    return (np.array(mask_img) > 127).astype(np.uint8)
+uploaded_file = st.file_uploader("上传图片", type=["jpg", "png", "jpeg"])
 
-def process_image(image_pil):
-    image_rgb = np.array(image_pil)
-    h, w = image_rgb.shape[:2]
-
-    results = model(image_rgb, verbose=False)
-
-    union_mask = np.zeros((h, w), dtype=np.uint8)
-    num_cracks = 0
-
-    if results and results[0].masks is not None:
-        masks_data = results[0].masks.data.cpu().numpy()
-        num_cracks = len(masks_data)
-        for m in masks_data:
-            m_arr = resize_mask(m, w, h)
-            union_mask = np.maximum(union_mask, m_arr)
-
-    skeleton = skeletonize(union_mask > 0).astype(np.uint8)
-    total_length = int(np.sum(skeleton))
-    area_ratio = float(np.sum(union_mask > 0) / (h * w) * 100)
-
-    level = mp_algo.evaluate(area_ratio, total_length, num_cracks)
-
-    overlay = image_rgb.copy()
-    overlay[union_mask > 0] = [0, 255, 0]
-
-    return overlay, total_length, num_cracks, area_ratio, level
-
-st.markdown('<div class="main-title">裂缝检测与损伤评估系统</div>', unsafe_allow_html=True)
-
-uploaded_file = st.file_uploader("上传图像", type=["jpg", "jpeg", "png", "bmp", "tif", "tiff"])
-
-if uploaded_file:
+if uploaded_file is not None:
     image = Image.open(uploaded_file)
-    image = ImageOps.exif_transpose(image).convert("RGB")
+    st.image(image, caption="原始图像", use_column_width=True)
 
-    if st.button("开始检测"):
-        overlay, length, num, area, level = process_image(image)
+    if st.button("开始识别"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp:
+            image.save(tmp.name)
+            temp_path = tmp.name
 
-        col1, col2 = st.columns(2)
-        col1.image(image, caption="原始图像", use_container_width=True)
-        col2.image(overlay, caption="检测结果", use_container_width=True)
+        results = model(temp_path)
 
-        st.markdown('<div class="result-box">', unsafe_allow_html=True)
-        st.write(f"**裂缝总长度：** {length}")
-        st.write(f"**裂缝数量：** {num}")
-        st.write(f"**裂缝面积率：** {area:.3f}%")
-        st.write(f"**损伤等级：** {level}")
-        st.markdown('</div>', unsafe_allow_html=True)
+        res_plotted = results[0].plot()
+        res_image = Image.fromarray(res_plotted)
+
+        st.image(res_image, caption="识别结果", use_column_width=True)
+
+        # 裂缝数量统计
+        crack_num = len(results[0].boxes)
+        st.write(f"检测到裂缝数量：{crack_num}")
+
+        # 简单损伤等级评估
+        if crack_num == 0:
+            level = "无损伤"
+        elif crack_num <= 2:
+            level = "轻微损伤"
+        elif crack_num <= 5:
+            level = "中等损伤"
+        else:
+            level = "严重损伤"
+
+        st.write(f"结构损伤等级：{level}")
+
+        os.remove(temp_path)
