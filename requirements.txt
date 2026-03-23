@@ -1,7 +1,8 @@
-streamlit
-ultralytics
-opencv-python-headless
-scikit-image
-numpy
-Pillow
-matplotlib
+streamlit==1.44.1
+ultralytics==8.3.31
+opencv-python-headless==4.10.0.84
+numpy==1.26.4
+Pillow==10.4.0
+scikit-image==0.24.0
+torch==2.5.1
+torchvision==0.20.1
