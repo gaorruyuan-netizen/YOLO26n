@@ -1,113 +1,68 @@
 import streamlit as st
-import pandas as pd
+import cv2
 import numpy as np
-import joblib
-import matplotlib.pyplot as plt
+from ultralytics import YOLO
+from skimage.morphology import skeletonize
+from PIL import Image
+import tempfile
 
-st.set_page_config(
-    page_title="PABC Strength Prediction System",
-    page_icon="📊",
-    layout="wide"
-)
+st.set_page_config(page_title="Crack Detection System", layout="wide")
 
-# =========================
-# 标题
-# =========================
-st.title("PABC Compressive Strength Prediction System")
-st.markdown(
-    "This web application is developed for predicting the compressive strength of PABC materials using machine learning models."
-)
+st.title("Crack Detection and Damage Assessment System")
+st.write("Upload an image to detect cracks and evaluate damage level.")
 
-# =========================
-# 加载模型
-# =========================
 @st.cache_resource
 def load_model():
-    model = joblib.load("lgbm_model.pkl")  # 你的模型文件
+    model = YOLO("best.pt")
     return model
 
 model = load_model()
 
-# =========================
-# 侧边栏
-# =========================
-st.sidebar.header("Input Options")
+# MP damage evaluation
+def evaluate_damage(area_rate, total_length, num_cracks):
+    if area_rate < 0.5:
+        return "I"
+    elif area_rate < 1.5:
+        return "II"
+    elif area_rate < 2.5:
+        return "III"
+    elif area_rate < 5:
+        return "IV"
+    else:
+        return "V"
 
-input_method = st.sidebar.radio(
-    "Choose input method:",
-    ["Manual Input", "Upload Excel File"]
-)
+uploaded_file = st.file_uploader("Upload Image", type=["jpg", "png", "jpeg"])
 
-# =========================
-# 手动输入
-# =========================
-if input_method == "Manual Input":
-    st.subheader("Manual Input Parameters")
+if uploaded_file is not None:
+    image = Image.open(uploaded_file)
+    image = np.array(image)
 
-    col1, col2, col3 = st.columns(3)
+    st.image(image, caption="Original Image", use_column_width=True)
+
+    results = model(image)
+    mask = np.zeros(image.shape[:2], dtype=np.uint8)
+    num_cracks = 0
+
+    if results[0].masks is not None:
+        masks = results[0].masks.data.cpu().numpy()
+        num_cracks = len(masks)
+        for m in masks:
+            mask = np.maximum(mask, (m > 0.5).astype(np.uint8))
+
+    skeleton = skeletonize(mask > 0)
+    total_length = np.sum(skeleton)
+    area_rate = np.sum(mask) / (mask.shape[0] * mask.shape[1]) * 100
+
+    level = evaluate_damage(area_rate, total_length, num_cracks)
+
+    col1, col2 = st.columns(2)
 
     with col1:
-        Cement = st.number_input("Cement")
-        Sand = st.number_input("Sand")
-        Water = st.number_input("Water")
+        st.image(mask, caption="Crack Mask")
 
     with col2:
-        SA = st.number_input("SA")
-        FA = st.number_input("FA")
-        CA = st.number_input("CA")
-
-    with col3:
-        Superplasticizer = st.number_input("Superplasticizer")
-        Fiber = st.number_input("Fiber")
-        Temperature = st.number_input("Temperature")
-
-    if st.button("Predict"):
-        input_data = np.array([[Cement, Sand, Water, SA, FA, CA, Superplasticizer, Fiber, Temperature]])
-        prediction = model.predict(input_data)
-        st.success(f"Predicted Compressive Strength: {prediction[0]:.2f} MPa")
-
-# =========================
-# 上传 Excel
-# =========================
-else:
-    st.subheader("Upload Excel File for Batch Prediction")
-
-    uploaded_file = st.file_uploader("Upload Excel file", type=["xlsx"])
-
-    if uploaded_file is not None:
-        data = pd.read_excel(uploaded_file)
-        st.write("Input Data:")
-        st.dataframe(data)
-
-        if st.button("Run Prediction"):
-            predictions = model.predict(data)
-            data["Predicted Strength"] = predictions
-
-            st.write("Prediction Results:")
-            st.dataframe(data)
-
-            # 下载按钮
-            csv = data.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="Download Results as CSV",
-                data=csv,
-                file_name="prediction_results.csv",
-                mime="text/csv",
-            )
-
-            # 可视化
-            st.subheader("Prediction Visualization")
-            fig, ax = plt.subplots()
-            ax.plot(predictions)
-            ax.set_xlabel("Sample Index")
-            ax.set_ylabel("Predicted Strength (MPa)")
-            st.pyplot(fig)
-
-# =========================
-# 页脚
-# =========================
-st.markdown("---")
-st.markdown(
-    "Developed for academic research purposes. "
-    "This system can be used for predicting compressive strength of PABC materials."
-)
+        st.write("### Damage Assessment Results")
+        st.write(f"Crack Length: {total_length}")
+        st.write(f"Number of Cracks: {num_cracks}")
+        st.write(f"Crack Area Ratio: {area_rate:.2f}%")
+        st.write(f"Damage Level: {level}")
