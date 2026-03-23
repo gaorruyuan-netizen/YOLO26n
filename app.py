@@ -1,29 +1,23 @@
 import streamlit as st
-import cv2
 import numpy as np
 from ultralytics import YOLO
 from skimage.morphology import skeletonize
 from PIL import Image
 
-# 页面设置（白底）
 st.set_page_config(
     page_title="裂缝检测与损伤评估系统",
     layout="wide"
 )
 
-# 标题
 st.title("裂缝检测与损伤评估系统")
-st.markdown("### 上传混凝土裂缝图像，系统将自动识别裂缝并评估损伤等级")
+st.write("上传图像后，系统将自动识别裂缝并评估损伤等级。")
 
-# 加载模型
 @st.cache_resource
 def load_model():
-    model = YOLO("best.pt")
-    return model
+    return YOLO("best.pt")
 
 model = load_model()
 
-# MP损伤等级评估
 def evaluate_damage(area_rate, total_length, num_cracks):
     if area_rate < 0.5:
         return "Ⅰ级（轻微损伤）"
@@ -36,44 +30,41 @@ def evaluate_damage(area_rate, total_length, num_cracks):
     else:
         return "Ⅴ级（极严重损伤）"
 
-# 上传图片
 uploaded_file = st.file_uploader("上传裂缝图像", type=["jpg", "png", "jpeg"])
 
 if uploaded_file is not None:
-    image = Image.open(uploaded_file)
+    image = Image.open(uploaded_file).convert("RGB")
     image = np.array(image)
 
     st.subheader("原始图像")
-    st.image(image, width="stretch")  # 改成width="stretch"，去掉警告
+    st.image(image, width="stretch")
 
-    # YOLO检测
-    results = model(image)
+    with st.spinner("正在进行裂缝检测，请稍候..."):
+        results = model(image, verbose=False)
 
     mask = np.zeros(image.shape[:2], dtype=np.uint8)
     num_cracks = 0
 
-    if results[0].masks is not None:
+    if results and results[0].masks is not None:
         masks = results[0].masks.data.cpu().numpy()
         num_cracks = len(masks)
+
         for m in masks:
+            if m.shape != mask.shape:
+                import cv2
+                m = cv2.resize(m, (mask.shape[1], mask.shape[0]))
             mask = np.maximum(mask, (m > 0.5).astype(np.uint8))
 
-    # 裂缝骨架长度
     skeleton = skeletonize(mask > 0)
-    total_length = np.sum(skeleton)
-
-    # 裂缝面积率
-    area_rate = np.sum(mask) / (mask.shape[0] * mask.shape[1]) * 100
-
-    # 损伤等级
+    total_length = int(np.sum(skeleton))
+    area_rate = float(np.sum(mask) / (mask.shape[0] * mask.shape[1]) * 100) if mask.size else 0.0
     level = evaluate_damage(area_rate, total_length, num_cracks)
 
-    # 两列显示
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("裂缝识别结果")
-        st.image(mask, width="stretch")
+        st.image(mask * 255, width="stretch", clamp=True)
 
     with col2:
         st.subheader("损伤评估结果")
